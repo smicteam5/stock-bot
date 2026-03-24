@@ -42,20 +42,39 @@ async def fetch_yahoo_quote(session, symbol: str) -> dict:
     return {"symbol": symbol, "price": price, "change": chg}
 
 async def fetch_fear_greed(session) -> str:
-    url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as r:
-        data = await r.json()
-    score = data["fear_and_greed"]["score"]
-    rating = data["fear_and_greed"]["rating"]
-    rating_kr = {
-        "Extreme Fear": "극도의 공포",
-        "Fear":         "공포",
-        "Neutral":      "중립",
-        "Greed":        "탐욕",
-        "Extreme Greed":"극도의 탐욕",
-    }.get(rating, rating)
-    return f"{score:.1f} / 100  ({rating_kr})"
+    urls = [
+        "https://production.dataviz.cnn.io/index/fearandgreed/graphdata",
+        "https://fear-and-greed-index.p.rapidapi.com/v1/fgi",
+    ]
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+    for url in urls:
+        try:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as r:
+                data = await r.json(content_type=None)
+            # CNN 응답 구조
+            if "fear_and_greed" in data:
+                score  = float(data["fear_and_greed"]["score"])
+                rating = data["fear_and_greed"]["rating"]
+            # 대체 API 응답 구조
+            elif "fgi" in data:
+                score  = float(data["fgi"]["now"]["value"])
+                rating = data["fgi"]["now"]["valueText"]
+            else:
+                continue
+            rating_kr = {
+                "Extreme Fear": "극도의 공포",
+                "Fear":         "공포",
+                "Neutral":      "중립",
+                "Greed":        "탐욕",
+                "Extreme Greed":"극도의 탐욕",
+            }.get(rating, rating)
+            return f"{score:.1f} / 100  ({rating_kr})"
+        except Exception as e:
+            print(f"Fear&Greed 요청 실패 ({url}): {e}")
+            continue
+    return "데이터 조회 실패"
 
 def arrow(chg: float) -> str:
     return "🔴▼" if chg < 0 else "🟢▲"
