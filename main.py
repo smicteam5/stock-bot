@@ -4,7 +4,8 @@ import aiohttp
 import feedparser
 from datetime import datetime, time
 import pytz
-from telegram import Bot
+from telegram import Bot, Update
+from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram.error import TelegramError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -324,57 +325,24 @@ async def check_kita():
 # ════════════════════════════════════════════════════════════════════════
 
 async def fetch_investor_flow(session, investor: str, trade: str, top_n: int = 7) -> list:
-    """
-    네이버 금융 기관/외국인 순매수/순매도 상위 종목 + 시총 대비 비율 계산
-    investor: 'institution' | 'foreign'
-    trade:    'buy' | 'sell'
-    """
-    # 네이버 금융 업종별 외국인/기관 매매 동향 URL
-    if investor == "foreign":
-        url = "https://finance.naver.com/fund/fundsise.naver?type=FH" if trade == "buy"               else "https://finance.naver.com/fund/fundsise.naver?type=FH"
-        naver_type = "1" if trade == "buy" else "2"
-        url = f"https://finance.naver.com/sise/sise_quant.naver?sosok=0"
-    else:
-        naver_type = "1" if trade == "buy" else "2"
-        url = f"https://finance.naver.com/sise/sise_quant.naver?sosok=0"
-
-    # KRX 기관/외국인 순매수 API 사용
     import re
     from datetime import date
 
     today = date.today().strftime("%Y%m%d")
-
-    if investor == "foreign":
-        krx_url = "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
-        form = {
-            "bld": "dbms/MDC/STAT/standard/MDCSTAT02203",
-            "locale": "ko_KR",
-            "trdDd": today,
-            "money": "1",
-            "idxIndMidclssCd": "00",
-            "sortParamColumn": "NETBID_TRDVAL",
-            "sortType": "DESC" if trade == "buy" else "ASC",
-            "askBid": "0",
-            "codeNmSearchText": "",
-            "page": "1",
-            "pageSize": "30",
-        }
-    else:
-        krx_url = "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
-        form = {
-            "bld": "dbms/MDC/STAT/standard/MDCSTAT02203",
-            "locale": "ko_KR",
-            "trdDd": today,
-            "money": "1",
-            "idxIndMidclssCd": "00",
-            "sortParamColumn": "NETBID_TRDVAL",
-            "sortType": "DESC" if trade == "buy" else "ASC",
-            "askBid": "0",
-            "codeNmSearchText": "",
-            "page": "1",
-            "pageSize": "30",
-        }
-
+    krx_url = "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
+    form = {
+        "bld": "dbms/MDC/STAT/standard/MDCSTAT02203",
+        "locale": "ko_KR",
+        "trdDd": today,
+        "money": "1",
+        "idxIndMidclssCd": "00",
+        "sortParamColumn": "NETBID_TRDVAL",
+        "sortType": "DESC" if trade == "buy" else "ASC",
+        "askBid": "0",
+        "codeNmSearchText": "",
+        "page": "1",
+        "pageSize": "30",
+    }
     headers = {
         "User-Agent": "Mozilla/5.0",
         "Referer": "https://data.krx.co.kr/",
@@ -389,19 +357,16 @@ async def fetch_investor_flow(session, investor: str, trade: str, top_n: int = 7
 
         items = data.get("output", [])
         for item in items:
-            name       = item.get("ISU_ABBRV", "")
-            mktcap     = float(item.get("MKTCAP", 0) or 0)          # 시가총액 (백만원)
+            name   = item.get("ISU_ABBRV", "")
+            mktcap = float(item.get("MKTCAP", 0) or 0)
             if investor == "foreign":
-                net_val = float(item.get("FRGN_NETBID_TRDVAL", 0) or 0)  # 외국인 순매수 (백만원)
+                net_val = float(item.get("FRGN_NETBID_TRDVAL", 0) or 0)
             else:
-                net_val = float(item.get("INST_NETBID_TRDVAL", 0) or 0)  # 기관 순매수 (백만원)
+                net_val = float(item.get("INST_NETBID_TRDVAL", 0) or 0)
 
             if mktcap <= 0:
                 continue
-
-            ratio = (net_val / mktcap) * 100   # 시총 대비 순매수 비율 (%)
-
-            # trade 방향에 맞게 필터
+            ratio = (net_val / mktcap) * 100
             if trade == "buy" and net_val <= 0:
                 continue
             if trade == "sell" and net_val >= 0:
@@ -410,18 +375,12 @@ async def fetch_investor_flow(session, investor: str, trade: str, top_n: int = 7
             change_rate = item.get("CMPPREVDD_PRC", "")
             isin = item.get("ISU_CD", item.get("MKT_ID", ""))
             results.append({
-                "name":   name,
-                "ratio":  ratio,
-                "net":    net_val,
-                "change": change_rate,
-                "isin":   isin,
+                "name": name, "ratio": ratio,
+                "net": net_val, "change": change_rate, "isin": isin,
             })
 
-        # 시총 대비 비율 절댓값 기준 정렬
         results.sort(key=lambda x: abs(x["ratio"]), reverse=True)
         top = results[:top_n]
-
-        # 섹터 정보 추가
         for item_r in top:
             isin_code = item_r.get("isin", "")
             if isin_code:
@@ -432,20 +391,11 @@ async def fetch_investor_flow(session, investor: str, trade: str, top_n: int = 7
 
     except Exception as e:
         print(f"KRX 수급 오류 ({investor}/{trade}): {e}")
-
     return results[:top_n]
 
-# KRX 업종 코드 → 한국어 섹터명 매핑
-KRX_SECTOR_MAP = {
-    "G10": "에너지", "G15": "소재", "G20": "산업재", "G25": "경기소비재",
-    "G30": "필수소비재", "G35": "헬스케어", "G40": "금융", "G45": "IT",
-    "G50": "통신서비스", "G55": "유틸리티", "G60": "부동산",
-}
-
-SECTOR_CACHE: dict = {}  # 종목코드 → 섹터명 캐시
+SECTOR_CACHE: dict = {}
 
 async def fetch_sector(session, isin_code: str) -> str:
-    """KRX에서 종목 섹터(업종) 조회"""
     if isin_code in SECTOR_CACHE:
         return SECTOR_CACHE[isin_code]
     try:
@@ -475,14 +425,13 @@ async def fetch_sector(session, isin_code: str) -> str:
                 return sector
     except Exception:
         pass
-    # 네이버 금융에서 업종 보조 조회
     try:
+        import re
         naver_url = f"https://finance.naver.com/item/main.naver?code={isin_code[-6:]}"
         headers2 = {"User-Agent": "Mozilla/5.0", "Accept-Language": "ko-KR"}
         async with session.get(naver_url, headers=headers2,
                                timeout=aiohttp.ClientTimeout(total=8)) as r:
             html = await r.text(encoding="euc-kr", errors="replace")
-        import re
         m = re.search(r"업종</th>.*?<td[^>]*>(.*?)</td>", html, re.DOTALL)
         if m:
             sector = re.sub(r"<[^>]+>", "", m.group(1)).strip()
@@ -506,7 +455,6 @@ def format_flow_lines(items: list, trade: str) -> list:
     return lines if lines else ["  데이터 없음"]
 
 async def send_supply_demand_alert(label: str):
-    """기관/외국인 시총 대비 수급 알림 전송"""
     async with aiohttp.ClientSession() as session:
         inst_buy  = await fetch_investor_flow(session, "institution", "buy",  top_n=10)
         inst_sell = await fetch_investor_flow(session, "institution", "sell", top_n=10)
@@ -550,40 +498,24 @@ async def send_supply_demand_close():
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 5) 52주 신고가 / 신저가 알림 (매일 장 마감 후 15:40)
+# 6) 52주 신고가 / 신저가 알림
 # ════════════════════════════════════════════════════════════════════════
 
 async def fetch_52week_stocks(session, mode: str) -> list:
-    """
-    네이버 금융에서 52주 신고가/신저가 종목 스크래핑
-    mode: 'high' or 'low'
-    """
+    import re
     if mode == "high":
         url = "https://finance.naver.com/sise/sise_high.naver"
     else:
         url = "https://finance.naver.com/sise/sise_low.naver"
 
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept-Language": "ko-KR,ko;q=0.9",
-    }
+    headers = {"User-Agent": "Mozilla/5.0", "Accept-Language": "ko-KR,ko;q=0.9"}
     results = []
     try:
         async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as r:
             html = await r.text(encoding="euc-kr", errors="replace")
 
-        import re
-        # 종목명, 코드, 변동률 파싱
-        pattern = re.compile(
-            r'code=([A-Z0-9]+).*?>([ \w가-힣]+)</a>.*?'
-            r'<td[^>]*>([\d,]+)</td>.*?'   # 현재가
-            r'<td[^>]*>.*?([\d.]+)%',
-            re.DOTALL
-        )
-        # 더 간단한 파싱: 종목명과 등락률
         name_pattern = re.compile(r'sise_item\.naver\?code=(\w+)[^>]*>([\w\s가-힣·&;]+)</a>')
         rate_pattern  = re.compile(r'([\+\-]?\d+\.\d+)%')
-
         names = name_pattern.findall(html)
         rates = rate_pattern.findall(html)
 
@@ -597,7 +529,6 @@ async def fetch_52week_stocks(session, mode: str) -> list:
     return results[:10]
 
 async def fetch_stock_news(session, stock_name: str) -> str:
-    """네이버 금융 뉴스에서 종목 관련 최신 헤드라인 1개 가져오기"""
     try:
         url = f"https://m.stock.naver.com/api/json/search/searchNews.nhn?query={stock_name}&pageSize=1"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -615,7 +546,6 @@ async def send_52week_alert():
         highs = await fetch_52week_stocks(session, "high")
         lows  = await fetch_52week_stocks(session, "low")
 
-        # 각 종목별 관련 뉴스 1개씩 가져오기
         high_lines = []
         for s in highs[:7]:
             news = await fetch_stock_news(session, s["name"])
@@ -657,20 +587,15 @@ async def send_52week_alert():
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 6) 기관/외국인 수급 알림 (매일 15:45 장 마감 후)
+# 7) 기관/외국인 수급 알림 (15:45)
 # ════════════════════════════════════════════════════════════════════════
 
 async def fetch_investor_trading(session, investor: str, trade_type: str) -> list:
-    """
-    네이버 금융에서 기관/외국인 순매수/순매도 상위 종목 가져오기
-    investor: 'institution' or 'foreign'
-    trade_type: 'buy' or 'sell'
-    """
-    # 네이버 금융 기관/외국인 매매동향 API
+    import re
     if investor == "institution":
-        ftype = "1"  # 기관
+        ftype = "1"
     else:
-        ftype = "2"  # 외국인
+        ftype = "2"
 
     if trade_type == "buy":
         url = f"https://finance.naver.com/fund/sise_by_investor.naver?bizdate=&sosok=0&ftype={ftype}&order=1"
@@ -687,11 +612,8 @@ async def fetch_investor_trading(session, investor: str, trade_type: str) -> lis
         async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as r:
             html = await r.text(encoding="euc-kr", errors="replace")
 
-        import re
-        # 종목명과 순매수 금액 파싱
-        name_pattern = re.compile(r'itemDetail\.naver\?code=\w+[^>]*>([\w\s가-힣·&;]+)</a>')
+        name_pattern   = re.compile(r'itemDetail\.naver\?code=\w+[^>]*>([\w\s가-힣·&;]+)</a>')
         amount_pattern = re.compile(r'<td[^>]*class="[^"]*num[^"]*"[^>]*>([\-\d,]+)</td>')
-
         names   = name_pattern.findall(html)
         amounts = amount_pattern.findall(html)
 
@@ -752,6 +674,144 @@ async def send_investor_flow_alert():
 
 
 # ════════════════════════════════════════════════════════════════════════
+# ★ 8) 코스피/코스닥 수급 누적 테이블 (신규 추가)
+#    - 매일 18:00 자동 전송
+#    - /수급누적 명령어로 즉시 조회
+# ════════════════════════════════════════════════════════════════════════
+
+import pandas as pd
+try:
+    from pykrx import stock as krx_stock
+    PYKRX_OK = True
+except ImportError:
+    PYKRX_OK = False
+    print("⚠️  pykrx 미설치 — 수급 누적 기능 비활성화 (pip install pykrx)")
+
+SUPPLY_START_YEAR = 2020   # 연간 집계 시작 연도
+
+def _fetch_supply_df(market: str) -> pd.DataFrame:
+    """pykrx로 지수 + 투자자별 순매수 수집"""
+    today = datetime.now(KST).strftime("%Y%m%d")
+    start = f"{SUPPLY_START_YEAR}0101"
+    code  = "1001" if market == "KOSPI" else "2001"
+
+    idx = krx_stock.get_index_ohlcv(start, today, code)[["종가"]]
+    idx.index = pd.to_datetime(idx.index)
+    idx.rename(columns={"종가": "지수"}, inplace=True)
+
+    raw = krx_stock.get_market_trading_value_by_date(start, today, market, detail=True)
+    raw.index = pd.to_datetime(raw.index)
+    raw = raw / 1e8  # 원 → 억 원
+
+    col_map = {"외국인합계": "외국인", "기관합계": "기관", "연기금등": "연기금", "개인": "개인"}
+    raw = raw.rename(columns=col_map)
+    cols = [c for c in col_map.values() if c in raw.columns]
+    return idx.join(raw[cols], how="left").fillna(0)
+
+
+def _f(v: float) -> str:
+    """억 원 포매팅"""
+    v = int(round(v))
+    if v == 0: return "0"
+    return f"-{abs(v):,}" if v < 0 else f"{v:,}"
+
+def _pct(v: float) -> str:
+    return f"{'+' if v > 0 else ''}{v:.2f}%"
+
+HDR  = f"{'기간':<9}{'지수':>8}{'등락':>8}{'외국인':>10}{'기관':>9}{'연기금':>8}{'개인':>9}"
+LINE = "─" * 61
+
+def _make_row(name, jisu, pct, fg, inst, pens, ind) -> str:
+    return (
+        f"{name:<9}{jisu:>8.2f}{_pct(pct):>8}"
+        f"{_f(fg):>10}{_f(inst):>9}{_f(pens):>8}{_f(ind):>9}"
+    )
+
+def _build_supply_msg(market: str, df: pd.DataFrame) -> str:
+    sup = ["외국인", "기관", "연기금", "개인"]
+
+    # ── 연간
+    yr = df.resample("YE").agg({"지수": "last", **{c: "sum" for c in sup}})
+    yr_rows = []
+    for i, r in yr.iterrows():
+        d = df[df.index.year == i.year]["지수"]
+        p = (d.iloc[-1] / d.iloc[0] - 1) * 100 if len(d) >= 2 else 0.0
+        yr_rows.append(_make_row(f"{i.year}년", r["지수"], p,
+                                 r["외국인"], r["기관"], r["연기금"], r["개인"]))
+
+    # ── 월간 최근 6개월
+    mo = df.resample("ME").agg({"지수": "last", **{c: "sum" for c in sup}}).tail(6)
+    mo_rows = []
+    for i, r in mo.iterrows():
+        d = df[(df.index.year == i.year) & (df.index.month == i.month)]["지수"]
+        p = (d.iloc[-1] / d.iloc[0] - 1) * 100 if len(d) >= 2 else 0.0
+        mo_rows.append(_make_row(f"{i.year%100:02d}.{i.month:02d}", r["지수"], p,
+                                 r["외국인"], r["기관"], r["연기금"], r["개인"]))
+
+    # ── 주간 (이번 주)
+    wk = df.resample("W-FRI").agg({"지수": "last", **{c: "sum" for c in sup}}).tail(1)
+    wk_rows = []
+    for i, r in wk.iterrows():
+        d = df[df.index >= (i - pd.Timedelta(days=6))]["지수"]
+        p = (d.iloc[-1] / d.iloc[0] - 1) * 100 if len(d) >= 2 else 0.0
+        wk_rows.append(_make_row("주간", r["지수"], p,
+                                 r["외국인"], r["기관"], r["연기금"], r["개인"]))
+
+    # ── 일별 최근 5거래일
+    daily = df.tail(5).copy()
+    daily["pct"] = daily["지수"].pct_change() * 100
+    dy_rows = []
+    for i, r in daily.iterrows():
+        dy_rows.append(_make_row(i.strftime("%m/%d"), r["지수"], r.get("pct", 0),
+                                 r["외국인"], r["기관"], r["연기금"], r["개인"]))
+
+    icon  = "📈" if market == "KOSPI" else "📊"
+    mname = "코스피" if market == "KOSPI" else "코스닥"
+    now   = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
+
+    def block(label, rows):
+        return "\n".join([f"▸ {label}", HDR, LINE] + rows)
+
+    body = (
+        f"{icon} {mname} 수급 누적  (단위: 억원)\n"
+        f"업데이트: {now}\n\n"
+        + block("연간", yr_rows)               + "\n\n"
+        + block("월간 — 최근 6개월", mo_rows)  + "\n\n"
+        + block("주간", wk_rows)               + "\n\n"
+        + block("일별 — 최근 5거래일", dy_rows)
+    )
+    return f"```\n{body}\n```"
+
+
+async def send_supply_cumulative(chat_id: str = TELEGRAM_CHAT_ID):
+    """코스피 + 코스닥 수급 누적 테이블 전송"""
+    if not PYKRX_OK:
+        await bot.send_message(chat_id, "⚠️ pykrx 미설치로 수급 누적 기능을 사용할 수 없어요.\n`pip install pykrx` 후 재배포해주세요.")
+        return
+
+    await bot.send_message(chat_id, "⏳ 수급 누적 데이터 수집 중... (1~2분 소요)")
+    loop = asyncio.get_event_loop()
+
+    for market in ["KOSPI", "KOSDAQ"]:
+        try:
+            # pykrx는 동기 라이브러리 → 별도 스레드에서 실행
+            df  = await loop.run_in_executor(None, _fetch_supply_df, market)
+            msg = _build_supply_msg(market, df)
+            # 4096자 초과 시 분할
+            for chunk in [msg[i:i+4000] for i in range(0, len(msg), 4000)]:
+                await bot.send_message(chat_id, chunk, parse_mode="Markdown")
+        except Exception as e:
+            await bot.send_message(chat_id, f"❌ {market} 수급 누적 오류: {e}")
+
+    print(f"[{datetime.now(KST)}] 수급 누적 테이블 전송 완료")
+
+
+# /수급누적 명령어 핸들러
+async def cmd_supply_cumulative(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    asyncio.create_task(send_supply_cumulative(str(update.effective_chat.id)))
+
+
+# ════════════════════════════════════════════════════════════════════════
 # 스케줄러 설정 & 실행
 # ════════════════════════════════════════════════════════════════════════
 
@@ -759,12 +819,12 @@ async def main():
     scheduler = AsyncIOScheduler(timezone=KST)
 
     # 매일 오전 7:30 – 모닝 브리핑
-    scheduler.add_job(send_morning_briefing, "cron", hour=7, minute=30)
+    scheduler.add_job(send_morning_briefing, "cron", hour=7,  minute=30)
 
-    # 매 3시간마다 – 뉴스 헤드라인 별도 알림
+    # 매 3시간마다 – 뉴스 헤드라인
     scheduler.add_job(send_news_alert, "interval", hours=3)
 
-    # 매 10분마다 – DART 기관 지분 변동 체크
+    # 매 10분마다 – DART 지분 변동 체크
     scheduler.add_job(check_dart, "interval", minutes=10)
 
     # 매 30분마다 – KITA 수출 데이터 체크
@@ -773,22 +833,36 @@ async def main():
     # 매일 13:00 – 장중 수급 알림
     scheduler.add_job(send_supply_demand_midday, "cron", hour=13, minute=0)
 
-    # 매일 15:40 – 장 마감 수급 + 52주 신고가/신저가 알림
+    # 매일 15:40 – 장 마감 수급 + 52주 신고가/신저가
     scheduler.add_job(send_supply_demand_close, "cron", hour=15, minute=40)
-    scheduler.add_job(send_52week_alert, "cron", hour=15, minute=40)
+    scheduler.add_job(send_52week_alert,        "cron", hour=15, minute=40)
 
-    # 매일 15:45 – 기관/외국인 수급 알림 (장 마감 후)
+    # 매일 15:45 – 기관/외국인 수급
     scheduler.add_job(send_investor_flow_alert, "cron", hour=15, minute=45)
+
+    # ★ 매일 18:00 – 코스피/코스닥 수급 누적 테이블 (신규)
+    scheduler.add_job(send_supply_cumulative,   "cron", hour=18, minute=0)
 
     scheduler.start()
     print(f"[{datetime.now(KST)}] ✅ 봇 시작됨 – 스케줄러 실행 중")
 
+    # 시작 시 즉시 실행
     await send_morning_briefing()
     await check_dart()
     await check_kita()
 
+    # ★ /수급누적 명령어 등록
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("수급누적", cmd_supply_cumulative))
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+
+    print("📌 명령어 /수급누적 등록 완료")
+
     while True:
         await asyncio.sleep(60)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
