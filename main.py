@@ -59,9 +59,7 @@ async def fetch_fear_greed(session) -> str:
         "https://production.dataviz.cnn.io/index/fearandgreed/graphdata",
         "https://fear-and-greed-index.p.rapidapi.com/v1/fgi",
     ]
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    }
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     for url in urls:
         try:
             async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as r:
@@ -109,7 +107,7 @@ async def send_morning_briefing():
     async with aiohttp.ClientSession() as session:
         nasdaq = await fetch_yahoo_quote(session, "^IXIC")
         snp    = await fetch_yahoo_quote(session, "^GSPC")
-        fg = await fetch_fear_greed(session)
+        fg     = await fetch_fear_greed(session)
         sector_lines = []
         for name, sym in SECTORS.items():
             q = await fetch_yahoo_quote(session, sym)
@@ -186,23 +184,15 @@ async def send_news_alert():
 # ════════════════════════════════════════════════════════════════════════
 
 WATCH_INSTITUTIONS = [
-    "국민연금",
-    "삼성자산운용",
-    "미래에셋자산운용",
-    "한국투자",
-    "KB자산운용",
-    "신한자산운용",
+    "국민연금", "삼성자산운용", "미래에셋자산운용",
+    "한국투자", "KB자산운용", "신한자산운용",
 ]
 
 seen_dart_ids: set = set()
 
 async def fetch_dart_major_holdings(session) -> list:
     url = "https://opendart.fss.or.kr/api/majorstock.json"
-    params = {
-        "crtfc_key": DART_API_KEY,
-        "page_no":   "1",
-        "page_count":"40",
-    }
+    params = {"crtfc_key": DART_API_KEY, "page_no": "1", "page_count": "40"}
     async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as r:
         data = await r.json(content_type=None)
     if data.get("status") != "000":
@@ -215,12 +205,12 @@ async def check_dart():
         items = await fetch_dart_major_holdings(session)
 
     for item in items:
-        doc_id    = item.get("rcept_no", "")
-        reporter  = item.get("repror_nm", "")
-        corp_name = item.get("corp_name", "")
-        stock_type= item.get("stkqy_irds_nm", "")
-        hold_ratio= item.get("stkqy_irds_rate", "")
-        rcept_dt  = item.get("rcept_dt", "")
+        doc_id     = item.get("rcept_no", "")
+        reporter   = item.get("repror_nm", "")
+        corp_name  = item.get("corp_name", "")
+        stock_type = item.get("stkqy_irds_nm", "")
+        hold_ratio = item.get("stkqy_irds_rate", "")
+        rcept_dt   = item.get("rcept_dt", "")
 
         if doc_id in seen_dart_ids:
             continue
@@ -228,7 +218,6 @@ async def check_dart():
             continue
 
         seen_dart_ids.add(doc_id)
-
         msg = (
             "━━━━━━━━━━━━━━━━━━━━━━━━\n"
             "🏦 *DART 기관 지분 변동 알림*\n"
@@ -283,7 +272,6 @@ async def check_kita():
 
     if not data:
         return
-
     key = str(data)
     if key == str(last_kita_data):
         return
@@ -293,12 +281,11 @@ async def check_kita():
         items = data.get("data") or data.get("list") or []
         if not items:
             return
-        latest = items[0]
-
-        export_amt   = latest.get("expAmt",   latest.get("expDlr",  "N/A"))
-        export_qty   = latest.get("expQty",   latest.get("expKg",   "N/A"))
-        unit_price   = latest.get("unitPrice","N/A")
-        period       = latest.get("statYymm", datetime.now(KST).strftime("%Y%m"))
+        latest     = items[0]
+        export_amt = latest.get("expAmt",   latest.get("expDlr",  "N/A"))
+        export_qty = latest.get("expQty",   latest.get("expKg",   "N/A"))
+        unit_price = latest.get("unitPrice","N/A")
+        period     = latest.get("statYymm", datetime.now(KST).strftime("%Y%m"))
 
         msg = (
             "━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -310,11 +297,7 @@ async def check_kita():
             f"💲 수출 단가: {unit_price}\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━"
         )
-        await bot.send_message(
-            chat_id=TELEGRAM_CHAT_ID,
-            text=msg,
-            parse_mode="Markdown"
-        )
+        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode="Markdown")
         print(f"[{datetime.now(KST)}] KITA 알림 전송 완료")
     except Exception as e:
         print(f"KITA 파싱 오류: {e}")
@@ -324,94 +307,20 @@ async def check_kita():
 # 5) 기관/외국인 시총 대비 순매수 수급 알림 (13:00, 15:40)
 # ════════════════════════════════════════════════════════════════════════
 
-async def fetch_investor_flow(session, investor: str, trade: str, top_n: int = 7) -> list:
-    import re
-    from datetime import date
-
-    today = date.today().strftime("%Y%m%d")
-    krx_url = "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
-    form = {
-        "bld": "dbms/MDC/STAT/standard/MDCSTAT02203",
-        "locale": "ko_KR",
-        "trdDd": today,
-        "money": "1",
-        "idxIndMidclssCd": "00",
-        "sortParamColumn": "NETBID_TRDVAL",
-        "sortType": "DESC" if trade == "buy" else "ASC",
-        "askBid": "0",
-        "codeNmSearchText": "",
-        "page": "1",
-        "pageSize": "30",
-    }
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Referer": "https://data.krx.co.kr/",
-        "Content-Type": "application/x-www-form-urlencoded",
-    }
-
-    results = []
-    try:
-        async with session.post(krx_url, data=form, headers=headers,
-                                timeout=aiohttp.ClientTimeout(total=15)) as r:
-            data = await r.json(content_type=None)
-
-        items = data.get("output", [])
-        for item in items:
-            name   = item.get("ISU_ABBRV", "")
-            mktcap = float(item.get("MKTCAP", 0) or 0)
-            if investor == "foreign":
-                net_val = float(item.get("FRGN_NETBID_TRDVAL", 0) or 0)
-            else:
-                net_val = float(item.get("INST_NETBID_TRDVAL", 0) or 0)
-
-            if mktcap <= 0:
-                continue
-            ratio = (net_val / mktcap) * 100
-            if trade == "buy" and net_val <= 0:
-                continue
-            if trade == "sell" and net_val >= 0:
-                continue
-
-            change_rate = item.get("CMPPREVDD_PRC", "")
-            isin = item.get("ISU_CD", item.get("MKT_ID", ""))
-            results.append({
-                "name": name, "ratio": ratio,
-                "net": net_val, "change": change_rate, "isin": isin,
-            })
-
-        results.sort(key=lambda x: abs(x["ratio"]), reverse=True)
-        top = results[:top_n]
-        for item_r in top:
-            isin_code = item_r.get("isin", "")
-            if isin_code:
-                item_r["sector"] = await fetch_sector(session, isin_code)
-            else:
-                item_r["sector"] = ""
-        return top
-
-    except Exception as e:
-        print(f"KRX 수급 오류 ({investor}/{trade}): {e}")
-    return results[:top_n]
-
 SECTOR_CACHE: dict = {}
 
 async def fetch_sector(session, isin_code: str) -> str:
     if isin_code in SECTOR_CACHE:
         return SECTOR_CACHE[isin_code]
     try:
-        url = "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
+        url  = "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
         form = {
             "bld": "dbms/MDC/STAT/standard/MDCSTAT03901",
-            "locale": "ko_KR",
-            "isuCd": isin_code,
-            "isuCd2": "",
-            "codeNmSearchText": "",
-            "pageSize": "1",
-            "page": "1",
+            "locale": "ko_KR", "isuCd": isin_code, "isuCd2": "",
+            "codeNmSearchText": "", "pageSize": "1", "page": "1",
         }
         headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Referer": "https://data.krx.co.kr/",
+            "User-Agent": "Mozilla/5.0", "Referer": "https://data.krx.co.kr/",
             "Content-Type": "application/x-www-form-urlencoded",
         }
         async with session.post(url, data=form, headers=headers,
@@ -428,7 +337,7 @@ async def fetch_sector(session, isin_code: str) -> str:
     try:
         import re
         naver_url = f"https://finance.naver.com/item/main.naver?code={isin_code[-6:]}"
-        headers2 = {"User-Agent": "Mozilla/5.0", "Accept-Language": "ko-KR"}
+        headers2  = {"User-Agent": "Mozilla/5.0", "Accept-Language": "ko-KR"}
         async with session.get(naver_url, headers=headers2,
                                timeout=aiohttp.ClientTimeout(total=8)) as r:
             html = await r.text(encoding="euc-kr", errors="replace")
@@ -440,6 +349,51 @@ async def fetch_sector(session, isin_code: str) -> str:
     except Exception:
         pass
     return "기타"
+
+async def fetch_investor_flow(session, investor: str, trade: str, top_n: int = 7) -> list:
+    from datetime import date
+    today   = date.today().strftime("%Y%m%d")
+    krx_url = "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
+    form = {
+        "bld": "dbms/MDC/STAT/standard/MDCSTAT02203",
+        "locale": "ko_KR", "trdDd": today, "money": "1",
+        "idxIndMidclssCd": "00", "sortParamColumn": "NETBID_TRDVAL",
+        "sortType": "DESC" if trade == "buy" else "ASC",
+        "askBid": "0", "codeNmSearchText": "", "page": "1", "pageSize": "30",
+    }
+    headers = {
+        "User-Agent": "Mozilla/5.0", "Referer": "https://data.krx.co.kr/",
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+    results = []
+    try:
+        async with session.post(krx_url, data=form, headers=headers,
+                                timeout=aiohttp.ClientTimeout(total=15)) as r:
+            data = await r.json(content_type=None)
+        items = data.get("output", [])
+        for item in items:
+            name    = item.get("ISU_ABBRV", "")
+            mktcap  = float(item.get("MKTCAP", 0) or 0)
+            net_val = float(item.get("FRGN_NETBID_TRDVAL" if investor == "foreign"
+                                     else "INST_NETBID_TRDVAL", 0) or 0)
+            if mktcap <= 0:
+                continue
+            ratio = (net_val / mktcap) * 100
+            if trade == "buy"  and net_val <= 0: continue
+            if trade == "sell" and net_val >= 0: continue
+            change_rate = item.get("CMPPREVDD_PRC", "")
+            isin        = item.get("ISU_CD", item.get("MKT_ID", ""))
+            results.append({"name": name, "ratio": ratio, "net": net_val,
+                            "change": change_rate, "isin": isin})
+        results.sort(key=lambda x: abs(x["ratio"]), reverse=True)
+        top = results[:top_n]
+        for item_r in top:
+            isin_code = item_r.get("isin", "")
+            item_r["sector"] = await fetch_sector(session, isin_code) if isin_code else ""
+        return top
+    except Exception as e:
+        print(f"KRX 수급 오류 ({investor}/{trade}): {e}")
+    return results[:top_n]
 
 def format_flow_lines(items: list, trade: str) -> list:
     lines = []
@@ -467,26 +421,19 @@ async def send_supply_demand_alert(label: str):
         f"💹 *기관/외국인 수급 ({label})*",
         f"🕐 {now_str} KST  |  시총 대비 순매수 비율 기준",
         "━━━━━━━━━━━━━━━━━━━━━━━━",
-        "",
-        "*🏦 기관 순매수 상위*",
+        "", "*🏦 기관 순매수 상위*",
     ] + format_flow_lines(inst_buy, "buy") + [
-        "",
-        "*🏦 기관 순매도 상위*",
+        "", "*🏦 기관 순매도 상위*",
     ] + format_flow_lines(inst_sell, "sell") + [
-        "",
-        "*🌐 외국인 순매수 상위*",
+        "", "*🌐 외국인 순매수 상위*",
     ] + format_flow_lines(frgn_buy, "buy") + [
-        "",
-        "*🌐 외국인 순매도 상위*",
+        "", "*🌐 외국인 순매도 상위*",
     ] + format_flow_lines(frgn_sell, "sell") + [
         "━━━━━━━━━━━━━━━━━━━━━━━━"
     ]
-
     await bot.send_message(
-        chat_id=TELEGRAM_CHAT_ID,
-        text="\n".join(lines),
-        parse_mode="Markdown",
-        disable_web_page_preview=True
+        chat_id=TELEGRAM_CHAT_ID, text="\n".join(lines),
+        parse_mode="Markdown", disable_web_page_preview=True
     )
     print(f"[{datetime.now(KST)}] 수급 알림 전송 완료 ({label})")
 
@@ -503,22 +450,17 @@ async def send_supply_demand_close():
 
 async def fetch_52week_stocks(session, mode: str) -> list:
     import re
-    if mode == "high":
-        url = "https://finance.naver.com/sise/sise_high.naver"
-    else:
-        url = "https://finance.naver.com/sise/sise_low.naver"
-
+    url     = "https://finance.naver.com/sise/sise_high.naver" if mode == "high" \
+              else "https://finance.naver.com/sise/sise_low.naver"
     headers = {"User-Agent": "Mozilla/5.0", "Accept-Language": "ko-KR,ko;q=0.9"}
     results = []
     try:
         async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as r:
             html = await r.text(encoding="euc-kr", errors="replace")
-
         name_pattern = re.compile(r'sise_item\.naver\?code=(\w+)[^>]*>([\w\s가-힣·&;]+)</a>')
-        rate_pattern  = re.compile(r'([\+\-]?\d+\.\d+)%')
+        rate_pattern = re.compile(r'([\+\-]?\d+\.\d+)%')
         names = name_pattern.findall(html)
         rates = rate_pattern.findall(html)
-
         for i, (code, name) in enumerate(names[:10]):
             name = name.strip()
             rate = rates[i] if i < len(rates) else "N/A"
@@ -530,7 +472,7 @@ async def fetch_52week_stocks(session, mode: str) -> list:
 
 async def fetch_stock_news(session, stock_name: str) -> str:
     try:
-        url = f"https://m.stock.naver.com/api/json/search/searchNews.nhn?query={stock_name}&pageSize=1"
+        url     = f"https://m.stock.naver.com/api/json/search/searchNews.nhn?query={stock_name}&pageSize=1"
         headers = {"User-Agent": "Mozilla/5.0"}
         async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=8)) as r:
             data = await r.json(content_type=None)
@@ -545,16 +487,13 @@ async def send_52week_alert():
     async with aiohttp.ClientSession() as session:
         highs = await fetch_52week_stocks(session, "high")
         lows  = await fetch_52week_stocks(session, "low")
-
-        high_lines = []
+        high_lines, low_lines = [], []
         for s in highs[:7]:
             news = await fetch_stock_news(session, s["name"])
             line = f"  📌 *{s['name']}* ({s['rate']}%)"
             if news:
                 line += f"\n      📰 {news[:40]}..."
             high_lines.append(line)
-
-        low_lines = []
         for s in lows[:7]:
             news = await fetch_stock_news(session, s["name"])
             line = f"  📌 *{s['name']}* ({s['rate']}%)"
@@ -568,20 +507,15 @@ async def send_52week_alert():
         "📊 *52주 신고가 / 신저가*",
         f"📅 {now_str} 장 마감",
         "━━━━━━━━━━━━━━━━━━━━━━━━",
-        "",
-        "*🚀 52주 신고가 종목*",
+        "", "*🚀 52주 신고가 종목*",
     ] + (high_lines if high_lines else ["  데이터 없음"]) + [
-        "",
-        "*📉 52주 신저가 종목*",
+        "", "*📉 52주 신저가 종목*",
     ] + (low_lines if low_lines else ["  데이터 없음"]) + [
         "━━━━━━━━━━━━━━━━━━━━━━━━"
     ]
-
     await bot.send_message(
-        chat_id=TELEGRAM_CHAT_ID,
-        text="\n".join(lines),
-        parse_mode="Markdown",
-        disable_web_page_preview=True
+        chat_id=TELEGRAM_CHAT_ID, text="\n".join(lines),
+        parse_mode="Markdown", disable_web_page_preview=True
     )
     print(f"[{datetime.now(KST)}] 52주 신고가/신저가 알림 전송 완료")
 
@@ -592,37 +526,26 @@ async def send_52week_alert():
 
 async def fetch_investor_trading(session, investor: str, trade_type: str) -> list:
     import re
-    if investor == "institution":
-        ftype = "1"
-    else:
-        ftype = "2"
-
-    if trade_type == "buy":
-        url = f"https://finance.naver.com/fund/sise_by_investor.naver?bizdate=&sosok=0&ftype={ftype}&order=1"
-    else:
-        url = f"https://finance.naver.com/fund/sise_by_investor.naver?bizdate=&sosok=0&ftype={ftype}&order=2"
-
+    ftype = "1" if investor == "institution" else "2"
+    order = "1" if trade_type == "buy" else "2"
+    url   = f"https://finance.naver.com/fund/sise_by_investor.naver?bizdate=&sosok=0&ftype={ftype}&order={order}"
     headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept-Language": "ko-KR,ko;q=0.9",
+        "User-Agent": "Mozilla/5.0", "Accept-Language": "ko-KR,ko;q=0.9",
         "Referer": "https://finance.naver.com",
     }
     results = []
     try:
         async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as r:
             html = await r.text(encoding="euc-kr", errors="replace")
-
         name_pattern   = re.compile(r'itemDetail\.naver\?code=\w+[^>]*>([\w\s가-힣·&;]+)</a>')
         amount_pattern = re.compile(r'<td[^>]*class="[^"]*num[^"]*"[^>]*>([\-\d,]+)</td>')
         names   = name_pattern.findall(html)
         amounts = amount_pattern.findall(html)
-
         for i, name in enumerate(names[:7]):
             name = name.strip()
             amt  = amounts[i].replace(",", "").strip() if i < len(amounts) else "N/A"
             try:
-                amt_int = int(amt)
-                amt_str = f"{amt_int:+,}백만원"
+                amt_str = f"{int(amt):+,}백만원"
             except ValueError:
                 amt_str = amt
             if name:
@@ -639,8 +562,7 @@ async def send_investor_flow_alert():
         for_sell  = await fetch_investor_trading(session, "foreign", "sell")
 
     def fmt_list(items, emoji):
-        if not items:
-            return ["  데이터 없음"]
+        if not items: return ["  데이터 없음"]
         return [f"  {emoji} *{s['name']}* {s['amount']}" for s in items]
 
     now_str = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
@@ -649,32 +571,25 @@ async def send_investor_flow_alert():
         "💰 *기관/외국인 수급 (잠정)*",
         f"📅 {now_str} 기준",
         "━━━━━━━━━━━━━━━━━━━━━━━━",
-        "",
-        "*🏦 기관 순매수 상위*",
+        "", "*🏦 기관 순매수 상위*",
     ] + fmt_list(inst_buy, "✅") + [
-        "",
-        "*🏦 기관 순매도 상위*",
+        "", "*🏦 기관 순매도 상위*",
     ] + fmt_list(inst_sell, "🔻") + [
-        "",
-        "*🌏 외국인 순매수 상위*",
+        "", "*🌏 외국인 순매수 상위*",
     ] + fmt_list(for_buy, "✅") + [
-        "",
-        "*🌏 외국인 순매도 상위*",
+        "", "*🌏 외국인 순매도 상위*",
     ] + fmt_list(for_sell, "🔻") + [
         "━━━━━━━━━━━━━━━━━━━━━━━━"
     ]
-
     await bot.send_message(
-        chat_id=TELEGRAM_CHAT_ID,
-        text="\n".join(lines),
-        parse_mode="Markdown",
-        disable_web_page_preview=True
+        chat_id=TELEGRAM_CHAT_ID, text="\n".join(lines),
+        parse_mode="Markdown", disable_web_page_preview=True
     )
     print(f"[{datetime.now(KST)}] 수급 알림 전송 완료")
 
 
 # ════════════════════════════════════════════════════════════════════════
-# ★ 8) 코스피/코스닥 수급 누적 테이블 (신규 추가)
+# ★ 8) 코스피/코스닥 수급 누적 테이블
 #    - 매일 18:00 자동 전송
 #    - /수급누적 명령어로 즉시 조회
 # ════════════════════════════════════════════════════════════════════════
@@ -685,12 +600,11 @@ try:
     PYKRX_OK = True
 except ImportError:
     PYKRX_OK = False
-    print("⚠️  pykrx 미설치 — 수급 누적 기능 비활성화 (pip install pykrx)")
+    print("⚠️  pykrx 미설치 — 수급 누적 기능 비활성화")
 
-SUPPLY_START_YEAR = 2020   # 연간 집계 시작 연도
+SUPPLY_START_YEAR = 2020
 
 def _fetch_supply_df(market: str) -> pd.DataFrame:
-    """pykrx로 지수 + 투자자별 순매수 수집"""
     today = datetime.now(KST).strftime("%Y%m%d")
     start = f"{SUPPLY_START_YEAR}0101"
     code  = "1001" if market == "KOSPI" else "2001"
@@ -701,16 +615,14 @@ def _fetch_supply_df(market: str) -> pd.DataFrame:
 
     raw = krx_stock.get_market_trading_value_by_date(start, today, market, detail=True)
     raw.index = pd.to_datetime(raw.index)
-    raw = raw / 1e8  # 원 → 억 원
+    raw = raw / 1e8
 
     col_map = {"외국인합계": "외국인", "기관합계": "기관", "연기금등": "연기금", "개인": "개인"}
-    raw = raw.rename(columns=col_map)
+    raw  = raw.rename(columns=col_map)
     cols = [c for c in col_map.values() if c in raw.columns]
     return idx.join(raw[cols], how="left").fillna(0)
 
-
 def _f(v: float) -> str:
-    """억 원 포매팅"""
     v = int(round(v))
     if v == 0: return "0"
     return f"-{abs(v):,}" if v < 0 else f"{v:,}"
@@ -730,16 +642,16 @@ def _make_row(name, jisu, pct, fg, inst, pens, ind) -> str:
 def _build_supply_msg(market: str, df: pd.DataFrame) -> str:
     sup = ["외국인", "기관", "연기금", "개인"]
 
-    # ── 연간
+    # 연간
     yr = df.resample("YE").agg({"지수": "last", **{c: "sum" for c in sup}})
     yr_rows = []
     for i, r in yr.iterrows():
-        d = df[df.index.year == i.year]["지수"]
-        p = (d.iloc[-1] / d.iloc[0] - 1) * 100 if len(d) >= 2 else 0.0
+        d   = df[df.index.year == i.year]["지수"]
+        p   = (d.iloc[-1] / d.iloc[0] - 1) * 100 if len(d) >= 2 else 0.0
         yr_rows.append(_make_row(f"{i.year}년", r["지수"], p,
                                  r["외국인"], r["기관"], r["연기금"], r["개인"]))
 
-    # ── 월간 최근 6개월
+    # 월간 최근 6개월
     mo = df.resample("ME").agg({"지수": "last", **{c: "sum" for c in sup}}).tail(6)
     mo_rows = []
     for i, r in mo.iterrows():
@@ -748,7 +660,7 @@ def _build_supply_msg(market: str, df: pd.DataFrame) -> str:
         mo_rows.append(_make_row(f"{i.year%100:02d}.{i.month:02d}", r["지수"], p,
                                  r["외국인"], r["기관"], r["연기금"], r["개인"]))
 
-    # ── 주간 (이번 주)
+    # 주간 (이번 주)
     wk = df.resample("W-FRI").agg({"지수": "last", **{c: "sum" for c in sup}}).tail(1)
     wk_rows = []
     for i, r in wk.iterrows():
@@ -757,7 +669,7 @@ def _build_supply_msg(market: str, df: pd.DataFrame) -> str:
         wk_rows.append(_make_row("주간", r["지수"], p,
                                  r["외국인"], r["기관"], r["연기금"], r["개인"]))
 
-    # ── 일별 최근 5거래일
+    # 일별 최근 5거래일
     daily = df.tail(5).copy()
     daily["pct"] = daily["지수"].pct_change() * 100
     dy_rows = []
@@ -782,33 +694,27 @@ def _build_supply_msg(market: str, df: pd.DataFrame) -> str:
     )
     return f"```\n{body}\n```"
 
-
 async def send_supply_cumulative(chat_id: str = TELEGRAM_CHAT_ID):
-    """코스피 + 코스닥 수급 누적 테이블 전송"""
     if not PYKRX_OK:
-        await bot.send_message(chat_id, "⚠️ pykrx 미설치로 수급 누적 기능을 사용할 수 없어요.\n`pip install pykrx` 후 재배포해주세요.")
+        await bot.send_message(chat_id,
+            "⚠️ pykrx 미설치로 수급 누적 기능을 사용할 수 없어요.\n"
+            "requirements.txt에 pykrx 추가 후 재배포해주세요.")
         return
 
     await bot.send_message(chat_id, "⏳ 수급 누적 데이터 수집 중... (1~2분 소요)")
     loop = asyncio.get_event_loop()
-
     for market in ["KOSPI", "KOSDAQ"]:
         try:
-            # pykrx는 동기 라이브러리 → 별도 스레드에서 실행
             df  = await loop.run_in_executor(None, _fetch_supply_df, market)
             msg = _build_supply_msg(market, df)
-            # 4096자 초과 시 분할
             for chunk in [msg[i:i+4000] for i in range(0, len(msg), 4000)]:
                 await bot.send_message(chat_id, chunk, parse_mode="Markdown")
         except Exception as e:
             await bot.send_message(chat_id, f"❌ {market} 수급 누적 오류: {e}")
-
     print(f"[{datetime.now(KST)}] 수급 누적 테이블 전송 완료")
 
-
-# /수급누적 명령어 핸들러
 async def cmd_supply_cumulative(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    asyncio.create_task(send_supply_cumulative(str(update.effective_chat.id)))
+    await send_supply_cumulative(str(update.effective_chat.id))
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -819,39 +725,28 @@ async def main():
     scheduler = AsyncIOScheduler(timezone=KST)
 
     # 매일 오전 7:30 – 모닝 브리핑
-    scheduler.add_job(send_morning_briefing, "cron", hour=7,  minute=30)
-
+    scheduler.add_job(send_morning_briefing,    "cron", hour=7,  minute=30)
     # 매 3시간마다 – 뉴스 헤드라인
-    scheduler.add_job(send_news_alert, "interval", hours=3)
-
+    scheduler.add_job(send_news_alert,          "interval", hours=3)
     # 매 10분마다 – DART 지분 변동 체크
-    scheduler.add_job(check_dart, "interval", minutes=10)
-
+    scheduler.add_job(check_dart,               "interval", minutes=10)
     # 매 30분마다 – KITA 수출 데이터 체크
-    scheduler.add_job(check_kita, "interval", minutes=30)
-
+    scheduler.add_job(check_kita,               "interval", minutes=30)
     # 매일 13:00 – 장중 수급 알림
-    scheduler.add_job(send_supply_demand_midday, "cron", hour=13, minute=0)
-
+    scheduler.add_job(send_supply_demand_midday,"cron", hour=13, minute=0)
     # 매일 15:40 – 장 마감 수급 + 52주 신고가/신저가
     scheduler.add_job(send_supply_demand_close, "cron", hour=15, minute=40)
     scheduler.add_job(send_52week_alert,        "cron", hour=15, minute=40)
-
     # 매일 15:45 – 기관/외국인 수급
     scheduler.add_job(send_investor_flow_alert, "cron", hour=15, minute=45)
-
-    # ★ 매일 18:00 – 코스피/코스닥 수급 누적 테이블 (신규)
+    # ★ 매일 18:00 – 코스피/코스닥 수급 누적 테이블
     scheduler.add_job(send_supply_cumulative,   "cron", hour=18, minute=0)
 
     scheduler.start()
-    print(f"[{datetime.now(KST)}] ✅ 봇 시작됨 – 스케줄러 실행 중")
+    print(f"[{datetime.now(KST)}] ✅ 봇 시작됨 — 스케줄러 실행 중")
+    print("📌 자동 실행 없음 — 스케줄 시간에만 발송")
 
-    # 시작 시 즉시 실행
-    await send_morning_briefing()
-    await check_dart()
-    await check_kita()
-
-    # ★ /수급누적 명령어 등록
+    # ★ 명령어 핸들러 등록
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("수급누적", cmd_supply_cumulative))
     await app.initialize()
